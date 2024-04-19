@@ -99,6 +99,7 @@ class NeRF(nn.Module):
         for i, l in enumerate(self.pts_linears):
             h = self.pts_linears[i](h)
             h = F.relu(h)
+            print(h.shape)
             if i in self.skips:
                 h = torch.cat([input_pts, h], -1)
 
