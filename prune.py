@@ -18,19 +18,40 @@ from load_llff import load_llff_data
 from load_deepvoxels import load_dv_data
 from load_blender import load_blender_data
 from load_LINEMOD import load_LINEMOD_data
+import torch.nn.utils.prune as prune
 
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 np.random.seed(0)
 DEBUG = False
 
+class ActivationAwareDNNPruning():
+    def layer_wise_pruning(self, layers, activations, percent=0.3):
+        if len(layers) != len(activations):
+            print("Error: Unable to prune, due to different size of activations and layers")
+        for i in range(len(layers)):
+            cumulative_activations = torch.sum(activations[i], dim=0)
+            num_to_remove = int(cumulative_activations.numel() * percent)
+            sorted_indices = torch.argsort(cumulative_activations.flatten())
+            mask = torch.ones_like(cumulative_activations, dtype=torch.uint8)
+            mask.flatten()[sorted_indices[:num_to_remove]] = 0
+            print("Masked array:", mask.shape)
+            layers[i].weight.requires_grad = False
+            print(layers[i].weight.requires_grad)
+            layers[i].weight = nn.Parameter(layers[i].weight * mask.unsqueeze(1))
+            print(layers[i].weight)
+            break
+        return layers
+
+
 # Pass arguments: 
 # sample_size: Number of samples to get calibration set for the pruning process
 # 
 
-def prune(percent_to_prune=0.2):
+def prune(percent_to_prune=0.3):
     parser = config_parser()
     args = parser.parse_args()
+
     # Load data
     K = None
     if args.dataset_type == 'llff':
@@ -60,8 +81,8 @@ def prune(percent_to_prune=0.2):
             near = 0.
             far = 1.
         print('NEAR FAR', near, far)
-    
-        elif args.dataset_type == 'blender':
+
+    elif args.dataset_type == 'blender':
         images, poses, render_poses, hwf, i_split = load_blender_data(args.datadir, args.half_res, args.testskip)
         print('Loaded blender', images.shape, render_poses.shape, hwf, args.datadir)
         i_train, i_val, i_test = i_split
@@ -103,8 +124,21 @@ def prune(percent_to_prune=0.2):
         return
 
     render_kwargs_train, render_kwargs_test, start, grad_vars, optimizer = create_nerf(args)
-    pruned_model = render_kwargs_train['network_fn'].clone().detach()
-    
+    pruned_model = render_kwargs_train['network_fn']
+     # Cast intrinsics to right types
+    H, W, focal = hwf
+    H, W = int(H), int(W)
+    hwf = [H, W, focal]
+
+    if K is None:
+        K = np.array([
+            [focal, 0, 0.5*W],
+            [0, focal, 0.5*H],
+            [0, 0, 1]
+        ])
+
+    N_rand = args.N_rand
+    use_batching = not args.no_batching
     for i in range(args.sample_size):
         img_i = np.random.choice(i_train)
         target = images[img_i]
@@ -140,12 +174,12 @@ def prune(percent_to_prune=0.2):
                                                 verbose=i < 10, retraw=True,
                                                 **render_kwargs_train)
 
-        
-    
-
-
+        model = (render_kwargs_train['network_fn'])
+        print("Activations: ", len(model.activations)," ", len(model.pts_linears), "\n", model.activations)
+    dnn_pruning = ActivationAwareDNNPruning()
+    model.pts_linears = dnn_pruning.layer_wise_pruning(model.pts_linears, model.activations, percent_to_prune)
 
 
 if __name__=='__main__':
     torch.set_default_tensor_type('torch.cuda.FloatTensor')
-    prune()
+    prune(0.33)

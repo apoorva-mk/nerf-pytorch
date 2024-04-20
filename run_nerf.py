@@ -528,6 +528,10 @@ def config_parser():
     parser.add_argument("--i_video",   type=int, default=50000, 
                         help='frequency of render_poses video saving')
 
+    # pruning arguments
+    parser.add_argument("--sample_size",   type=int, default=100, 
+                        help='Subset of images to form pruning calibration dataset')
+
     return parser
 
 
