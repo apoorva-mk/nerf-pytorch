@@ -131,6 +131,7 @@ def render(H, W, K, chunk=1024*32, rays=None, c2w=None, ndc=True,
     k_extract = ['rgb_map', 'disp_map', 'acc_map']
     ret_list = [all_ret[k] for k in k_extract]
     ret_dict = {k : all_ret[k] for k in all_ret if k not in k_extract}
+    # print("AMK: done render()")
     return ret_list + [ret_dict]
 
 
@@ -171,7 +172,7 @@ def render_path(render_poses, hwf, K, chunk, render_kwargs, gt_imgs=None, savedi
 
     rgbs = np.stack(rgbs, 0)
     disps = np.stack(disps, 0)
-
+    # print("AMK: done render_path")
     return rgbs, disps
 
 
@@ -703,6 +704,7 @@ def train():
 
 
     N_iters = 200000 + 1
+    N_iters = 1
     print('Begin')
     print('TRAIN views are', i_train)
     print('TEST views are', i_test)
@@ -712,6 +714,7 @@ def train():
     # writer = SummaryWriter(os.path.join(basedir, 'summaries', expname))
     
     start = start + 1
+    start = 0
     for i in trange(start, N_iters):
         time0 = time.time()
 
@@ -828,7 +831,6 @@ def train():
             print('Saved test set')
 
 
-    
         if i%args.i_print==0:
             tqdm.write(f"[TRAIN] Iter: {i} Loss: {loss.item()}  PSNR: {psnr.item()}")
         """

@@ -78,6 +78,9 @@ class NeRF(nn.Module):
         self.skips = skips
         self.use_viewdirs = use_viewdirs
         self.activations = []
+
+        print("AMK: initializing again")
+        self.save_activations = False
         
         self.pts_linears = nn.ModuleList(
             [nn.Linear(input_ch, W)] + [nn.Linear(W, W) if i not in self.skips else nn.Linear(W + input_ch, W) for i in range(D-1)])
@@ -99,17 +102,20 @@ class NeRF(nn.Module):
     def forward(self, x):
         input_pts, input_views = torch.split(x, [self.input_ch, self.input_ch_views], dim=-1)
         h = input_pts
-        print(input_pts.shape)
+        # print(input_pts.shape)
         for i, l in enumerate(self.pts_linears):
             h = self.pts_linears[i](h)
             h = F.relu(h)
-            if (len(self.activations) <= i):
-                self.activations.append(h)
-            else:
-                self.activations[i] += h
+            h_detached = h.clone().detach()
+            # print(self.save_activations)
+            if self.save_activations == True:
+                if (len(self.activations) <= i):
+                    self.activations.append(h_detached)
+                else:
+                    self.activations[i] += h_detached
             if i in self.skips:
                 h = torch.cat([input_pts, h], -1)
-            print(i, "\n", h.shape, self.pts_linears[i].weight.shape)
+            # print(i, "\n", h.shape, self.pts_linears[i].weight.shape)
 
 
         if self.use_viewdirs:
