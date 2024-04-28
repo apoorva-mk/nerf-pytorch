@@ -8,7 +8,7 @@ import re
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch.nn.utils import prune
+from flopth import flopth
 from tqdm import tqdm, trange
 
 import matplotlib.pyplot as plt
@@ -28,10 +28,12 @@ DEBUG = False
 
 class ActivationAwareDNNPruning():
     def layer_wise_pruning(self, model, layers, activations, percent=0.3):
-        print(f"PRUNE PERCENT: {percent}")
         pruned_weights = []
         if len(layers) != len(activations):
             print("Error: Unable to prune, due to different size of activations and layers")
+                
+        print('Model size: {:.3f}MB'.format(get_model_size(model)))
+
         for i in range(len(layers)):
             cumulative_activations = torch.sum(activations[i], dim=0)
             num_to_remove = int(cumulative_activations.numel() * percent)
@@ -41,38 +43,17 @@ class ActivationAwareDNNPruning():
             # print("Masked array:", mask.shape)
             layers[i].weight.requires_grad = False
             # print(layers[i].weight.requires_grad)
-            # layers[i] = prune.custom_from_mask(layers[i], name="weight", mask=mask.unsqueeze(1))
-            layers[i].weight = nn.Parameter(layers[i].weight * mask.unsqueeze(1))
-            pruned_weights.append(torch.count_nonzero(layers[i].weight))
+            mask = mask.unsqueeze(1).repeat(1, layers[i].weight.shape[1])
+            print(mask.shape, layers[i].weight.shape)
+
+            layers[i] = prune.custom_from_mask(layers[i], name="weight", mask=mask)
+            prune.remove(layers[i], 'weight')
+
+            # layers[i].weight = nn.Parameter(layers[i].weight * mask.unsqueeze(1))
+            # pruned_weights.append(torch.count_nonzero(layers[i].weight))
 
             # print(layers[i].weight)
-
-        param_size = 0.0
-        pruned_param_size = 0.0
-        pruned_index = 0
-        pattern = re.compile(r"pts_linears\..*\.weight")
-
-        for name, param in model.named_parameters():
-            if pattern.match(name):
-                # print("PRUNED", name, param.nelement(), pruned_weights[pruned_index])
-                pruned_param_size += (pruned_weights[pruned_index]) * param.element_size()
-                pruned_index += 1
-                param_size += param.nelement() * param.element_size()
-            else:
-                param_size += param.nelement() * param.element_size()
-                pruned_param_size += param.nelement() * param.element_size()
-
-        # print(param_size, pruned_param_size)
-        buffer_size = 0
-        for buffer in model.buffers():
-            buffer_size += buffer.nelement() * buffer.element_size()
-
-        size_all_mb = (param_size + buffer_size) / 1024**2
-        pruned_size_all_mb = (pruned_param_size + buffer_size) / 1024**2
-
-        print('Model size: {:.3f}MB'.format(size_all_mb))
-        print('Pruned model size: {:.3f}MB'.format(pruned_size_all_mb))
-
+        print('Pruned model size: {:.3f}MB'.format(get_model_size(model)))
         return layers
 
 
@@ -80,7 +61,19 @@ class ActivationAwareDNNPruning():
 # sample_size: Number of samples to get calibration set for the pruning process
 # 
 
-def prune(percent_to_prune=0.3):
+def get_model_size(model):
+    param_size = 0
+    for param in model.parameters():
+        param_size += param.nelement() * param.element_size()
+    buffer_size = 0
+    for buffer in model.buffers():
+        buffer_size += buffer.nelement() * buffer.element_size()
+
+    size_all_mb = (param_size + buffer_size) / 1024**2
+    return size_all_mb
+    print('model size: {:.3f}MB'.format(size_all_mb))
+
+def prune_nerf(percent_to_prune=0.3):
     parser = config_parser()
     args = parser.parse_args()
 
@@ -222,28 +215,36 @@ def prune(percent_to_prune=0.3):
         model = (render_kwargs_train['network_fn'])
         # print("Activations: ", len(model.activations)," ", len(model.pts_linears), "\n", model.activations)
     render_kwargs_train['network_fn'].save_activations = False
+    dummy_inputs = torch.randn((65536, 63))
+    flops, params = flopth(model, in_size=((65536, 90),), show_detail=True)
+    print("Original FLOPs: ", flops)
+
     # # Pruning the model
     dnn_pruning = ActivationAwareDNNPruning()
-    model.pts_linears = dnn_pruning.layer_wise_pruning(model, model.pts_linears, model.activations, percent_to_prune)
+    _ = dnn_pruning.layer_wise_pruning(model, model.pts_linears, model.activations, percent_to_prune)
+    flops, params = flopth(model, in_size=((65536, 90),), show_detail=True)
+    print("Pruned FLOPs: ", flops)
 
     print("MOVIE\n")
-    with torch.no_grad():
-        # render_kwargs_test['network_fn'].save_activations = render_kwargs_train['network_fn'].save_activations = False
-        print(render_kwargs_test['network_fn'].save_activations)
-        render_kwargs_test['network_fn'] = render_kwargs_train['network_fn']
-        rgbs, disps = render_path(render_poses, hwf, K, args.chunk, render_kwargs_train)
-    print('Done, saving', rgbs.shape, disps.shape)
-    moviebase = os.path.join(args.basedir, args.expname, '{}_spiral_pruned_{}_'.format(args.expname, int(percent_to_prune*100)))
-    imageio.mimwrite(moviebase + 'rgb.mp4', to8b(rgbs), fps=30, quality=8)
-    imageio.mimwrite(moviebase + 'disp.mp4', to8b(disps / np.max(disps)), fps=30, quality=8)
+    # with torch.no_grad():
+    #     # render_kwargs_test['network_fn'].save_activations = render_kwargs_train['network_fn'].save_activations = False
+    #     print(render_kwargs_test['network_fn'].save_activations)
+    #     render_kwargs_test['network_fn'] = render_kwargs_train['network_fn']
+    #     rgbs, disps = render_path(render_poses, hwf, K, args.chunk, render_kwargs_train)
+    # print('Done, saving', rgbs.shape, disps.shape)
+    # moviebase = os.path.join(args.basedir, args.expname, '{}_spiral_pruned_{}_'.format(args.expname, int(percent_to_prune*100)))
+    # imageio.mimwrite(moviebase + 'rgb.mp4', to8b(rgbs), fps=30, quality=8)
+    # imageio.mimwrite(moviebase + 'disp.mp4', to8b(disps / np.max(disps)), fps=30, quality=8)
 
     # # Calculating loss and PSNR over test set
-    loss = 0.0
-    psnr = 0.0
+    # print('TEST views are', i_test)
+
     with torch.no_grad():
+        loss = 0.0
+        psnr = 0.0
         for i in i_train:
-            # print(i)
-            # img_i = np.random.choice(i_train)
+            print(i)
+            img_i = np.random.choice(i_train)
             target = images[i]
             target = torch.Tensor(target).to(device)
             pose = poses[img_i, :3,:4]
@@ -272,27 +273,20 @@ def prune(percent_to_prune=0.3):
                 batch_rays = torch.stack([rays_o, rays_d], 0)
                 target_s = target[select_coords[:, 0], select_coords[:, 1]]  # (N_rand, 3)
 
-                #####  Core optimization loop  #####
-                rgb, disp, acc, extras = render(H, W, K, chunk=args.chunk, rays=batch_rays,
-                                                        verbose=i < 10, retraw=True,
-                                                        **render_kwargs_train)
+            #####  Core optimization loop  #####
+            rgb, disp, acc, extras = render(H, W, K, chunk=args.chunk, rays=batch_rays,
+                                                    verbose=i < 10, retraw=True,
+                                                    **render_kwargs_train)
 
-                img_loss = img2mse(rgb, target_s)
-                trans = extras['raw'][...,-1]
-                loss += img_loss
-                psnr += mse2psnr(img_loss)
-
-                if 'rgb0' in extras:
-                    img_loss0 = img2mse(extras['rgb0'], target_s)
-                    loss = loss + img_loss0
-                    psnr0 = mse2psnr(img_loss0)
-    loss = loss / len(i_train)
-    psnr = psnr / len(i_train)
+        img_loss = img2mse(rgb, target_s)
+        trans = extras['raw'][...,-1]
+        loss += img_loss
+        psnr += mse2psnr(img_loss)
+    loss = loss / len(i_test)
+    psnr = psnr / len(i_test)
     print(f"Over test set, \n loss: {loss} \n psnr : {psnr}")
 
 
 if __name__=='__main__':
     torch.set_default_tensor_type('torch.cuda.FloatTensor')
-    percents = [0.0, 0.15, 0.3, 0.5, 0.65, 0.8, 0.9]
-    for p in percents: 
-        prune(p)
+    prune_nerf(0.50)
